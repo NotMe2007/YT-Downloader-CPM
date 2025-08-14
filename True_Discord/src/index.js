@@ -519,7 +519,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
   const state = sessions.get(userId) || {};
   const usePanel = state && state.panelMessageId && (state.dmChannelId || state.ephemeral);
   if (!usePanel && !already) {
-  try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
+  try { await interaction.deferReply({ ephemeral: true }); } catch (_) {}
   }
 
   const updatePanel = async (content) => {
@@ -532,14 +532,14 @@ async function handleDownload(client, interaction, url, type, quality, format) {
           if (msg) {
             const embed = makeSetupEmbed({ ...state, status: content }, content);
             const components = buildPanelComponents(state);
-            await msg.edit({ embeds: [embed], components }).catch(()=>{});
+            await msg.edit({ embeds: [embed], components }).catch(() => {});
           }
         }
       } else if (usePanel) {
         await refreshPanelMessage(client, { ...state, status: content });
       } else {
         if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
-        else await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+        else await interaction.followUp({ content, ephemeral: true });
       }
     } catch (_) {}
   };
@@ -592,7 +592,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
         const payloadLarge = { content: `Done. File too large for Discord (${Math.round(stat.size/1024/1024)}MB). A DM with a retriever has been sent.` };
         if (stat.size <= sizeLimitBytes()) {
             if (interaction.deferred || interaction.replied) await interaction.editReply(payloadSmall);
-            else await interaction.followUp({ ...payloadSmall, flags: MessageFlags.Ephemeral });
+            else await interaction.followUp({ ...payloadSmall, ephemeral: true });
             try { await fs.unlink(finalPath); } catch (_) {}
         } else {
           // Send DM with retriever
@@ -607,7 +607,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
           await fs.writeFile(batPath, batContent, 'utf8');
           try { await interaction.user.send({ content: `PIN: ${pin}`, files: [new AttachmentBuilder(batPath)] }); } catch (_) {}
           if (interaction.deferred || interaction.replied) await interaction.editReply(payloadLarge);
-          else await interaction.followUp({ ...payloadLarge, flags: MessageFlags.Ephemeral });
+          else await interaction.followUp({ ...payloadLarge, ephemeral: true });
         }
       }
   await incDownload('yt');
@@ -750,7 +750,7 @@ async function main() {
 
   // Acknowledge the modal quickly (ephemeral) to avoid the red error banner,
   // then refresh the panel and remove the ephemeral reply for a silent UX.
-  try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
+  try { await interaction.deferReply({ ephemeral: true }); } catch (_) {}
   // Try to refresh existing panel if present
   await refreshPanelMessage(client, next);
   // Remove the ephemeral acknowledgement so nothing is shown to the user
@@ -769,7 +769,7 @@ async function main() {
           const state = { url: '', type: 'video', quality: '720p', videoFormat: 'mp4', audioFormat: 'mp3', ephemeral: true };
           const embed = makeSetupEmbed(state);
           const components = buildPanelComponents(state);
-          const reply = await interaction.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral, fetchReply: true }).catch(()=>null);
+          const reply = await interaction.reply({ embeds: [embed], components, ephemeral: true, fetchReply: true }).catch(()=>null);
           if (reply) sessions.set(userId, { ...state, panelMessageId: reply.id, channelId: interaction.channelId, ephemeral: true });
           await recordUser(userId);
           return;
@@ -904,7 +904,7 @@ async function main() {
 
       if (!interaction.isChatInputCommand()) return;
       if (interaction.commandName === 'ping') {
-  return interaction.reply({ content: `Pong! ${Math.round(client.ws.ping)}ms`, flags: MessageFlags.Ephemeral });
+  return interaction.reply({ content: `Pong! ${Math.round(client.ws.ping)}ms`, ephemeral: true });
       }
       if (interaction.commandName === 'setup') {
         const user = interaction.user;
@@ -915,10 +915,10 @@ async function main() {
             let interfaceChannel = guild ? guild.channels.cache.find(c => c.name === 'interface' && c.isTextBased()) : null;
             if (!interfaceChannel) interfaceChannel = await ensureInterfaceChannel(guild);
             if (!interfaceChannel) {
-              return interaction.reply({ content: 'Need permission to create #interface channel. Please create it manually.', flags: MessageFlags.Ephemeral });
+              return interaction.reply({ content: 'Need permission to create #interface channel. Please create it manually.', ephemeral: true });
             }
             await ensureInterfaceMessage(interfaceChannel, client);
-            return interaction.reply({ content: `Go to ${interfaceChannel} and press New to create your panel.`, flags: MessageFlags.Ephemeral });
+            return interaction.reply({ content: `Go to ${interfaceChannel} and press New to create your panel.`, ephemeral: true });
         }
         // If not in allowed server, but user is a member of allowed server, DM them
         const allowedGuild = await interaction.client.guilds.fetch(ALLOWED_GUILD_ID).catch(() => null);
@@ -946,7 +946,7 @@ async function main() {
       }
       if (interaction.commandName === 'main') {
         // Owner-only by ID
-  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: 'Not allowed.', flags: MessageFlags.Ephemeral });
+  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: 'Not allowed.', ephemeral: true });
         if (!metrics) await loadMetrics();
         const embed = buildStatsEmbed();
         if (!interaction.guildId) {
@@ -956,12 +956,12 @@ async function main() {
           mainStatsTimer = setInterval(() => updateMainStatsMessage(client), 5 * 60 * 1000);
           return;
         }
-  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  return interaction.reply({ embeds: [embed], ephemeral: true });
       }
       if (interaction.commandName === 'clearpanel') {
         const state = sessions.get(interaction.user.id);
         if (!state?.panelMessageId) {
-          return interaction.reply({ content: 'No panel to clear.', flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: 'No panel to clear.', ephemeral: true });
         }
         try {
           if (state.dmChannelId) {
@@ -979,9 +979,9 @@ async function main() {
             }
           }
           sessions.delete(interaction.user.id);
-          return interaction.reply({ content: 'Cleared.', flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: 'Cleared.', ephemeral: true });
         } catch (_) {
-          return interaction.reply({ content: 'Failed to clear.', flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: 'Failed to clear.', ephemeral: true });
         }
       }
       if (interaction.commandName === 'download') {
@@ -1002,11 +1002,11 @@ async function main() {
           if (entry.startedAt && entry.bytesSent>0) { const elapsed=(Date.now()-entry.startedAt)/1000; const speed=entry.bytesSent/Math.max(elapsed,0.001); const rem=entry.size-entry.bytesSent; if (rem>0 && speed>0) eta = Math.round(rem/speed)+'s'; }
           const msRemain = entry.expiresAt - Date.now();
           const remFmt = formatLocalizedDuration(msRemain, interaction.locale || interaction.user.locale || 'en');
-          return interaction.reply({ content: `Status for ${code}: ${state} ${percent}% (${entry.bytesSent}/${entry.size} bytes) ETA: ${eta} Expires: ${remFmt}`, flags: MessageFlags.Ephemeral });
+          return interaction.reply({ content: `Status for ${code}: ${state} ${percent}% (${entry.bytesSent}/${entry.size} bytes) ETA: ${eta} Expires: ${remFmt}`, ephemeral: true });
         }
         const used = usedPins.get(code);
-        if (used) return interaction.reply({ content: `Status for ${code}: ${used.reason === 'used' ? 'complete' : 'expired/invalid'}`, flags: MessageFlags.Ephemeral });
-        return interaction.reply({ content: 'Code not found.', flags: MessageFlags.Ephemeral });
+        if (used) return interaction.reply({ content: `Status for ${code}: ${used.reason === 'used' ? 'complete' : 'expired/invalid'}`, ephemeral: true });
+        return interaction.reply({ content: 'Code not found.', ephemeral: true });
       }
       if (interaction.commandName === 'clear') {
         const countOpt = interaction.options.getInteger('count');
@@ -1027,7 +1027,7 @@ async function main() {
           }
           if (batch.size < fetchSize) break;
         }
-        return interaction.reply({ content: `Cleared ${deleted} bot messages (limit ${limit}).`, flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: `Cleared ${deleted} bot messages (limit ${limit}).`, ephemeral: true });
       }
       if (interaction.commandName === 'crunchy') {
         const url = interaction.options.getString('url', true);
@@ -1037,7 +1037,7 @@ async function main() {
         const userId = interaction.user.id;
   await recordUser(userId);
         const userDir = await ensureDirs(userId);
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply({ ephemeral: true });
 
         const runJob = async () => {
           try {
@@ -1110,7 +1110,7 @@ async function main() {
         // @ts-ignore
         if (canEdit) interaction.editReply({ content: 'An error occurred.' }).catch(() => {});
         // @ts-ignore
-  else if (canReply) interaction.reply({ content: 'An error occurred.', flags: MessageFlags.Ephemeral }).catch(() => {});
+  else if (canReply) interaction.reply({ content: 'An error occurred.', ephemeral: true }).catch(() => {});
       } catch (_) {}
       try { await reportError(client, interaction.user, e, 'interaction'); } catch (_) {}
     }
