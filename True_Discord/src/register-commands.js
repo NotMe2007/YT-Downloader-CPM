@@ -8,7 +8,7 @@ const commands = [
   },
   {
     name: 'setup',
-  description: 'DM me a private download panel (only available in the main server)'
+    description: 'DM me a private panale (Note you need to be in the Everything Server)'
   },
   {
     name: 'clearpanel',

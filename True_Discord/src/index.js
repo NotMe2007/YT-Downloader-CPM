@@ -478,25 +478,38 @@ async function relocateLargeFile(originalPath) {
 // Ensure the #interface channel exists (auto-create if missing)
 async function ensureInterfaceChannel(guild) {
   if (!guild) return null;
-  let channel = guild.channels.cache.find(c => c.name === 'interface' && c.isTextBased?.());
-  if (channel) return channel;
-  // Attempt create
-  try {
-    channel = await guild.channels.create({ name: 'interface', type: ChannelType.GuildText, reason: 'Auto-created for downloader interface' });
-    return channel;
-  } catch (_) { return null; }
+  // Only return an existing channel; do NOT auto-create to avoid duplicates on restart.
+  const channel = guild.channels.cache.find(c => c.name === 'interface' && c.isTextBased?.());
+  return channel || null;
 }
 
 // Post the interface "Start" button message if not already present
 async function ensureInterfaceMessage(channel, client) {
   try {
     if (!channel || !channel.isTextBased?.()) return;
-    const recent = await channel.messages.fetch({ limit: 20 }).catch(()=>null);
-    const existing = recent ? [...recent.values()].find(m => m.author.id === client.user.id && m.components?.some(r => r.components?.some(c => c.customId === 'iface_start'))) : null;
+    // Try pinned messages first (pin the interface when creating so it's always discoverable)
+    let existing = null;
+    try {
+      const pinned = await channel.messages.fetchPinned().catch(() => null);
+      if (pinned) {
+        existing = [...pinned.values()].find(m => m.author?.id === client.user?.id && m.components?.some(r => r.components?.some(c => c.customId === 'iface_start')));
+      }
+    } catch (_) {}
+
+    // Fallback: search recent messages (expand to 100 to be more reliable)
+    if (!existing) {
+      const recent = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+      existing = recent ? [...recent.values()].find(m => m.author?.id === client.user?.id && m.components?.some(r => r.components?.some(c => c.customId === 'iface_start'))) : null;
+    }
+
     if (!existing) {
       const emb = new EmbedBuilder().setColor(0x3b82f6).setTitle('Downloader Interface').setDescription('Press Start to open a private (ephemeral) control panel only you can see.');
       const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('iface_start').setLabel('Start').setStyle(ButtonStyle.Success));
-      await channel.send({ embeds: [emb], components: [row] }).catch(()=>{});
+      const sent = await channel.send({ embeds: [emb], components: [row] }).catch(() => null);
+      if (sent) {
+        // Pin the interface message so subsequent restarts find it reliably
+        try { await sent.pin().catch(() => {}); } catch (_) {}
+      }
     }
   } catch (_) {}
 }
@@ -519,7 +532,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
   const state = sessions.get(userId) || {};
   const usePanel = state && state.panelMessageId && (state.dmChannelId || state.ephemeral);
   if (!usePanel && !already) {
-  try { await interaction.deferReply({ ephemeral: true }); } catch (_) {}
+    try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
   }
 
   const updatePanel = async (content) => {
@@ -539,7 +552,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
         await refreshPanelMessage(client, { ...state, status: content });
       } else {
         if (interaction.deferred || interaction.replied) await interaction.editReply({ content });
-        else await interaction.followUp({ content, ephemeral: true });
+  else await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
       }
     } catch (_) {}
   };
@@ -592,7 +605,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
         const payloadLarge = { content: `Done. File too large for Discord (${Math.round(stat.size/1024/1024)}MB). A DM with a retriever has been sent.` };
         if (stat.size <= sizeLimitBytes()) {
             if (interaction.deferred || interaction.replied) await interaction.editReply(payloadSmall);
-            else await interaction.followUp({ ...payloadSmall, ephemeral: true });
+            else await interaction.followUp({ ...payloadSmall, flags: MessageFlags.Ephemeral });
             try { await fs.unlink(finalPath); } catch (_) {}
         } else {
           // Send DM with retriever
@@ -607,7 +620,7 @@ async function handleDownload(client, interaction, url, type, quality, format) {
           await fs.writeFile(batPath, batContent, 'utf8');
           try { await interaction.user.send({ content: `PIN: ${pin}`, files: [new AttachmentBuilder(batPath)] }); } catch (_) {}
           if (interaction.deferred || interaction.replied) await interaction.editReply(payloadLarge);
-          else await interaction.followUp({ ...payloadLarge, ephemeral: true });
+          else await interaction.followUp({ ...payloadLarge, flags: MessageFlags.Ephemeral });
         }
       }
   await incDownload('yt');
@@ -750,7 +763,7 @@ async function main() {
 
   // Acknowledge the modal quickly (ephemeral) to avoid the red error banner,
   // then refresh the panel and remove the ephemeral reply for a silent UX.
-  try { await interaction.deferReply({ ephemeral: true }); } catch (_) {}
+  try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
   // Try to refresh existing panel if present
   await refreshPanelMessage(client, next);
   // Remove the ephemeral acknowledgement so nothing is shown to the user
@@ -769,7 +782,7 @@ async function main() {
           const state = { url: '', type: 'video', quality: '720p', videoFormat: 'mp4', audioFormat: 'mp3', ephemeral: true };
           const embed = makeSetupEmbed(state);
           const components = buildPanelComponents(state);
-          const reply = await interaction.reply({ embeds: [embed], components, ephemeral: true, fetchReply: true }).catch(()=>null);
+          const reply = await interaction.reply({ embeds: [embed], components, flags: MessageFlags.Ephemeral, withResponse: true }).catch(()=>null);
           if (reply) sessions.set(userId, { ...state, panelMessageId: reply.id, channelId: interaction.channelId, ephemeral: true });
           await recordUser(userId);
           return;
@@ -786,7 +799,14 @@ async function main() {
           const row = new ActionRowBuilder().addComponents(input);
           // @ts-ignore
           modal.addComponents(row);
-          return interaction.showModal(modal);
+          try {
+            await interaction.showModal(modal);
+            return;
+          } catch (e) {
+            // Protect process from Unknown interaction errors
+            try { await interaction.reply({ content: 'Failed to open modal. Try again.', flags: MessageFlags.Ephemeral }); } catch (_) {}
+            return;
+          }
         }
   const refreshPanel = async (state, opts = {}) => refreshPanelMessage(client, state, opts);
         if (id === 'gui_choose_video') {
@@ -903,9 +923,9 @@ async function main() {
       }
 
       if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName === 'ping') {
-  return interaction.reply({ content: `Pong! ${Math.round(client.ws.ping)}ms`, ephemeral: true });
-      }
+    if (interaction.commandName === 'ping') {
+  return interaction.reply({ content: `Pong! ${Math.round(client.ws.ping)}ms`, flags: MessageFlags.Ephemeral });
+    }
       if (interaction.commandName === 'setup') {
         const user = interaction.user;
         const existing = sessions.get(user.id);
@@ -915,10 +935,10 @@ async function main() {
             let interfaceChannel = guild ? guild.channels.cache.find(c => c.name === 'interface' && c.isTextBased()) : null;
             if (!interfaceChannel) interfaceChannel = await ensureInterfaceChannel(guild);
             if (!interfaceChannel) {
-              return interaction.reply({ content: 'Need permission to create #interface channel. Please create it manually.', ephemeral: true });
+              return interaction.reply({ content: 'Need permission to create #interface channel. Please create it manually.', flags: MessageFlags.Ephemeral });
             }
             await ensureInterfaceMessage(interfaceChannel, client);
-            return interaction.reply({ content: `Go to ${interfaceChannel} and press New to create your panel.`, ephemeral: true });
+            return interaction.reply({ content: `Go to ${interfaceChannel} and press New to create your panel.`, flags: MessageFlags.Ephemeral });
         }
         // If not in allowed server, but user is a member of allowed server, DM them
         const allowedGuild = await interaction.client.guilds.fetch(ALLOWED_GUILD_ID).catch(() => null);
@@ -946,31 +966,42 @@ async function main() {
       }
       if (interaction.commandName === 'main') {
         // Owner-only by ID
-  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: 'Not allowed.', ephemeral: true });
+  if (interaction.user.id !== OWNER_ID) return interaction.reply({ content: 'Not allowed.', flags: MessageFlags.Ephemeral });
         if (!metrics) await loadMetrics();
         const embed = buildStatsEmbed();
         if (!interaction.guildId) {
-          const msg = await interaction.reply({ embeds: [embed], fetchReply: true });
+          const msg = await interaction.reply({ embeds: [embed], withResponse: true });
           mainStatsMsgRef = { channelId: msg.channelId, messageId: msg.id };
           if (mainStatsTimer) { clearInterval(mainStatsTimer); mainStatsTimer = null; }
           mainStatsTimer = setInterval(() => updateMainStatsMessage(client), 5 * 60 * 1000);
           return;
         }
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  return interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
       if (interaction.commandName === 'clearpanel') {
         const state = sessions.get(interaction.user.id);
         if (!state?.panelMessageId) {
-          return interaction.reply({ content: 'No panel to clear.', ephemeral: true });
+          return interaction.reply({ content: 'No panel to clear.', flags: MessageFlags.Ephemeral });
         }
         try {
-          if (state.dmChannelId) {
-            // DM panel
+          // If used in a DM channel, delete all bot messages in that DM (clear the panel and any bot messages)
+          if (interaction.channel && interaction.channel.type === 1) { // DM channel type enum in discord.js v14 is 1
+            const dmCh = interaction.channel;
+            // Fetch recent messages (up to 100) and delete messages authored by the bot
+            let fetched = await dmCh.messages.fetch({ limit: 100 }).catch(() => null);
+            if (fetched && fetched.size > 0) {
+              const toDelete = fetched.filter(m => m.author && m.author.id === (client.user && client.user.id));
+              for (const m of toDelete.values()) {
+                try { await m.delete().catch(() => {}); } catch(_) {}
+              }
+            }
+          } else if (state.dmChannelId) {
+            // Fallback: stored DM panel channel id — attempt to delete that single message
             const ch = await client.channels.fetch(state.dmChannelId).catch(() => null);
             const msg = ch && ch.messages ? await ch.messages.fetch(state.panelMessageId).catch(() => null) : null;
             if (msg) await msg.delete().catch(() => {});
           } else {
-            // Server panel
+            // Server panel: delete panel message as before
             const ch = interaction.channel;
             const msg = ch && ch.messages ? await ch.messages.fetch(state.panelMessageId).catch(() => null) : null;
             if (msg) {
@@ -979,9 +1010,10 @@ async function main() {
             }
           }
           sessions.delete(interaction.user.id);
-          return interaction.reply({ content: 'Cleared.', ephemeral: true });
-        } catch (_) {
-          return interaction.reply({ content: 'Failed to clear.', ephemeral: true });
+          return interaction.reply({ content: 'Cleared.', flags: MessageFlags.Ephemeral });
+        } catch (err) {
+          await logToFile('ERROR', `clearpanel failed: ${err?.stack || err}`);
+          return interaction.reply({ content: 'Failed to clear.', flags: MessageFlags.Ephemeral });
         }
       }
       if (interaction.commandName === 'download') {
@@ -1002,11 +1034,11 @@ async function main() {
           if (entry.startedAt && entry.bytesSent>0) { const elapsed=(Date.now()-entry.startedAt)/1000; const speed=entry.bytesSent/Math.max(elapsed,0.001); const rem=entry.size-entry.bytesSent; if (rem>0 && speed>0) eta = Math.round(rem/speed)+'s'; }
           const msRemain = entry.expiresAt - Date.now();
           const remFmt = formatLocalizedDuration(msRemain, interaction.locale || interaction.user.locale || 'en');
-          return interaction.reply({ content: `Status for ${code}: ${state} ${percent}% (${entry.bytesSent}/${entry.size} bytes) ETA: ${eta} Expires: ${remFmt}`, ephemeral: true });
+          return interaction.reply({ content: `Status for ${code}: ${state} ${percent}% (${entry.bytesSent}/${entry.size} bytes) ETA: ${eta} Expires: ${remFmt}`, flags: MessageFlags.Ephemeral });
         }
         const used = usedPins.get(code);
-        if (used) return interaction.reply({ content: `Status for ${code}: ${used.reason === 'used' ? 'complete' : 'expired/invalid'}`, ephemeral: true });
-        return interaction.reply({ content: 'Code not found.', ephemeral: true });
+  if (used) return interaction.reply({ content: `Status for ${code}: ${used.reason === 'used' ? 'complete' : 'expired/invalid'}`, flags: MessageFlags.Ephemeral });
+  return interaction.reply({ content: 'Code not found.', flags: MessageFlags.Ephemeral });
       }
       if (interaction.commandName === 'clear') {
         const countOpt = interaction.options.getInteger('count');
@@ -1027,7 +1059,7 @@ async function main() {
           }
           if (batch.size < fetchSize) break;
         }
-        return interaction.reply({ content: `Cleared ${deleted} bot messages (limit ${limit}).`, ephemeral: true });
+  return interaction.reply({ content: `Cleared ${deleted} bot messages (limit ${limit}).`, flags: MessageFlags.Ephemeral });
       }
       if (interaction.commandName === 'crunchy') {
         const url = interaction.options.getString('url', true);
@@ -1037,7 +1069,7 @@ async function main() {
         const userId = interaction.user.id;
   await recordUser(userId);
         const userDir = await ensureDirs(userId);
-  await interaction.deferReply({ ephemeral: true });
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
         const runJob = async () => {
           try {
@@ -1110,7 +1142,7 @@ async function main() {
         // @ts-ignore
         if (canEdit) interaction.editReply({ content: 'An error occurred.' }).catch(() => {});
         // @ts-ignore
-  else if (canReply) interaction.reply({ content: 'An error occurred.', ephemeral: true }).catch(() => {});
+  else if (canReply) interaction.reply({ content: 'An error occurred.', flags: MessageFlags.Ephemeral }).catch(() => {});
       } catch (_) {}
       try { await reportError(client, interaction.user, e, 'interaction'); } catch (_) {}
     }
