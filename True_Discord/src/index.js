@@ -648,17 +648,23 @@ function makeSetupEmbed(state = {}, status = '') {
     { name: 'Type', value: type, inline: true },
     { name: 'Quality', value: type === 'video' ? quality : 'N/A', inline: true },
     { name: 'Format', value: type === 'video' ? (videoFormat || 'mp4') : (audioFormat || 'mp3'), inline: true },
-    { name: 'Supported', value: 'YouTube, Twitch, Vimeo, Twitter/X, TikTok, many more.' },
-    { name: 'Limits', value: 'Discord upload cap ~25MB (varies by server). Bigger files are saved to disk.' }
+    { name: 'Supported', value: 'YouTube, TikTok — Crunchyroll coming soon (these are our main targets).' }
   ];
+  // Show video title if available
+  if (state.videoTitle) fields.unshift({ name: 'Title', value: state.videoTitle, inline: false });
+  // Show selected platform
+  if (state.platform) fields.push({ name: 'Platform', value: String(state.platform), inline: true });
   if (status) fields.unshift({ name: 'Status', value: status });
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(0x1f8b4c)
     .setTitle('YT Downloader — Admin Control Panel')
     .setDescription(desc)
     .addFields(fields)
     .setFooter({ text: 'Admin-only • Built with yt-dlp' })
     .setTimestamp();
+
+  if (state.thumbnailUrl) embed.setThumbnail(state.thumbnailUrl);
+  return embed;
 }
 
 function buildPanelComponents(state, opts = {}) {
@@ -710,6 +716,18 @@ function buildPanelComponents(state, opts = {}) {
       );
     rows.push(new ActionRowBuilder().addComponents(af));
   }
+
+  // Platform selector row (Windows, Linux, Android, Apple)
+  const platformSelect = new StringSelectMenuBuilder()
+    .setCustomId('gui_select_platform')
+    .setPlaceholder(state.platform ? `Platform: ${state.platform}` : 'Select platform')
+    .addOptions(
+      { label: 'Windows', value: 'Windows' },
+      { label: 'Linux', value: 'Linux' },
+      { label: 'Android', value: 'Android' },
+      { label: 'Apple (Not supported)', value: 'Apple' }
+    );
+  rows.push(new ActionRowBuilder().addComponents(platformSelect));
   return rows;
 }
 
@@ -758,17 +776,31 @@ async function main() {
         const url = interaction.fields.getTextInputValue('gui_url');
         const userId = interaction.user.id;
         const prev = sessions.get(userId) || { type: 'video', quality: '720p', videoFormat: 'mp4', audioFormat: 'mp3' };
-  const next = { ...prev, url };
+        const next = { ...prev, url };
         sessions.set(userId, next);
 
-  // Acknowledge the modal quickly (ephemeral) to avoid the red error banner,
-  // then refresh the panel and remove the ephemeral reply for a silent UX.
-  try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
-  // Try to refresh existing panel if present
-  await refreshPanelMessage(client, next);
-  // Remove the ephemeral acknowledgement so nothing is shown to the user
-  try { await interaction.deleteReply(); } catch (_) {}
-  return;
+        // Acknowledge the modal quickly (ephemeral) to avoid the red error banner
+        try { await interaction.deferReply({ flags: MessageFlags.Ephemeral }); } catch (_) {}
+
+        // Attempt to fetch video info (title + thumbnail) without blocking too long
+        try {
+          const info = await ytdlp.getInfo(url).catch(() => null);
+          if (info) {
+            // yt-dlp-wrap-plus returns varying shapes; try common properties
+            const title = info.title || info.videoDetails?.title || (info.entries && info.entries[0] && info.entries[0].title) || null;
+            const thumbnail = info.thumbnail || info.videoDetails?.thumbnail || (info.entries && info.entries[0] && info.entries[0].thumbnail) || null;
+            const s = sessions.get(userId) || next;
+            if (title) s.videoTitle = String(title).slice(0, 256);
+            if (thumbnail) s.thumbnailUrl = String(thumbnail);
+            sessions.set(userId, s);
+          }
+        } catch (_) {}
+
+        // Try to refresh existing panel if present
+        await refreshPanelMessage(client, sessions.get(userId) || next);
+        // Remove the ephemeral acknowledgement so nothing is shown to the user
+        try { await interaction.deleteReply(); } catch (_) {}
+        return;
       }
 
       // Button interactions for GUI
@@ -910,6 +942,22 @@ async function main() {
         if (id === 'gui_select_audio_format') {
           const next = { ...current, audioFormat: value };
           sessions.set(userId, next);
+          if (current.ephemeral) {
+            const embed = makeSetupEmbed(next, next.status || '');
+            const components = buildPanelComponents(next);
+            return interaction.update({ embeds: [embed], components });
+          } else {
+            await refreshPanelMessage(client, next);
+            return interaction.deferUpdate();
+          }
+        }
+        if (id === 'gui_select_platform') {
+          const next = { ...current, platform: value };
+          sessions.set(userId, next);
+          if (value === 'Apple') {
+            // Inform the user Apple is not supported
+            try { await interaction.reply({ content: 'Apple is not supported, sorry 😭🤗', flags: MessageFlags.Ephemeral }); } catch (_) {}
+          }
           if (current.ephemeral) {
             const embed = makeSetupEmbed(next, next.status || '');
             const components = buildPanelComponents(next);
